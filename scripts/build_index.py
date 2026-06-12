@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""
+Batch-embed index_images and build the FAISS index.
+
+Usage:
+    python scripts/build_index.py [--config config.yaml]
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+# Allow running from repo root without install
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.config import load_settings
+from app.encoders import load_encoder
+from app.index import build_index
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    args = parser.parse_args()
+
+    settings = load_settings(Path(args.config))
+    device = settings.resolved_device
+    print(f"Device  : {device}")
+    print(f"Encoder : {settings.encoder}")
+
+    encoder = load_encoder(
+        settings.encoder, device, str(settings.model_cache), settings.hf_token
+    )
+    print(f"Embed dim: {encoder.embed_dim}")
+
+    manifest_path = settings.data_dir / "index_manifest.jsonl"
+    if not manifest_path.exists():
+        sys.exit(f"Manifest not found: {manifest_path}\nRun 'make download-data' first.")
+
+    with open(manifest_path) as f:
+        records = [json.loads(l) for l in f]
+
+    print(f"Images to embed: {len(records)}")
+
+    all_embeddings = []
+    valid_records = []
+    batch_size = settings.batch_size
+
+    for i in tqdm(range(0, len(records), batch_size), desc="Embedding"):
+        batch_records = records[i : i + batch_size]
+        images = []
+        batch_valid = []
+        for r in batch_records:
+            try:
+                img = Image.open(r["path"]).convert("RGB")
+                images.append(img)
+                batch_valid.append(r)
+            except Exception as e:
+                print(f"  Skipping {r['path']}: {e}")
+
+        if not images:
+            continue
+
+        all_embeddings.append(encoder.encode(images))
+        valid_records.extend(batch_valid)
+
+    embeddings_np = np.vstack(all_embeddings).astype(np.float32)
+    print(f"Embeddings shape: {embeddings_np.shape}")
+
+    for idx, r in enumerate(valid_records):
+        r["id"] = idx
+
+    build_index(
+        embeddings_np,
+        valid_records,
+        encoder.name,
+        settings.index_dir,
+    )
+    print(f"Index saved to {settings.index_dir}")
+
+
+if __name__ == "__main__":
+    main()

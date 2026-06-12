@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  retrieval:
+    build: .
+    image: histopath-retrieval:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # Model weights (HuggingFace / timm cache) — persisted so downloads happen once
+      - /mnt/vdb/histopath/model_cache:/model_cache
+      # FAISS index + metadata — built by 'make build-index'
+      - /mnt/vdb/histopath/index_store:/index_store
+      # Dataset images — populated by 'make download-data'
+      - /mnt/vdb/histopath/data:/data
+      # Live-reload config without rebuild (optional; comment out in production)
+      - ./config.yaml:/app/config.yaml:ro
+    env_file:
+      - .env
+    environment:
+      - HF_HOME=/model_cache
+      - TRANSFORMERS_CACHE=/model_cache
+      - TORCH_HOME=/model_cache
+    # GPU support — requires nvidia-container-toolkit on the host.
+    # Remove or comment out the `deploy` block to run CPU-only.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

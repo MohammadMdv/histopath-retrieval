@@ -1,0 +1,18 @@
+# Histopathology patch retrieval — main config
+# All paths are inside the container; mount them as Docker volumes.
+
+encoder: phikon-v2          # options: phikon-v2, hibou-b, uni, uni2-h, virchow, virchow2
+top_k: 5
+subsample_per_class: 1000   # patches per class used to build the index (9 classes → 9000 total)
+batch_size: 64              # embedding batch size during index build
+device: auto                # auto | cuda | cpu
+
+paths:
+  data_dir: /data
+  index_dir: /index_store
+  model_cache: /model_cache
+
+# Evaluation settings
+eval:
+  n_bootstrap: 1000
+  query_sample: null          # null = use all CRC-VAL-HE-7K; set an int to subsample

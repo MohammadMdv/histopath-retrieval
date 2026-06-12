@@ -1,0 +1,14 @@
+data/
+index_store/
+model_cache/
+*.faiss
+*.env
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.log

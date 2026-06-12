@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Histopathology Patch Retrieval</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Histopathology Patch Retrieval</h1>
+    <div id="status-bar" class="status-bar">
+      <span id="encoder-info">Loading...</span>
+      <span id="index-info"></span>
+    </div>
+    <p class="disclaimer">
+      Research demo only &mdash; patch-level image&rarr;image retrieval, not clinically validated,
+      not hardened for public deployment.
+    </p>
+  </header>
+
+  <main>
+    <section class="upload-section">
+      <div id="drop-zone" class="drop-zone">
+        <p>Drag &amp; drop a patch image here<br>or</p>
+        <label class="file-btn">
+          Choose File
+          <input type="file" id="file-input" accept="image/*" hidden>
+        </label>
+        <p class="hint">224×224 H&amp;E patch (PNG / TIFF / JPEG)</p>
+      </div>
+      <div id="query-preview" class="query-preview hidden">
+        <h3>Query image</h3>
+        <img id="query-img" src="" alt="query">
+      </div>
+    </section>
+
+    <section id="results-section" class="results-section hidden">
+      <div class="results-header">
+        <h2>Top-<span id="k-label">5</span> Results</h2>
+        <div class="vote-badge">
+          Majority vote: <strong id="vote-label">&mdash;</strong>
+        </div>
+      </div>
+      <div id="results-grid" class="results-grid"></div>
+    </section>
+
+    <div id="error-msg" class="error hidden"></div>
+    <div id="spinner" class="spinner hidden">Retrieving&hellip;</div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
