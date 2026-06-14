@@ -23,9 +23,11 @@ The system is an offline research demo, not a clinical tool.
 ## Repository
 
 - **GitHub**: https://github.com/MohammadMdv/histopath-retrieval
-- **Branch**: `main` (single commit so far — `b77b580`)
-- **Local path on the build server**: `/root/histopath-retrieval/`
-- **Storage mount**: `/mnt/vdb/histopath/` — all large files (model weights, index, data) go here
+- **Branch**: `main`
+- **Local path on the build server**: `/home/user01/histopath-retrieval/`
+- **Storage**: single local disk. Large files (model weights, index, data) live inside the
+  repo folder under `./model_cache`, `./index_store`, `./data` (all gitignored). The earlier
+  `/mnt/vdb/histopath/` external mount is no longer used.
 
 ---
 
@@ -36,9 +38,9 @@ histopath-retrieval/
 ├── config.yaml              ← single source of truth for all runtime settings
 ├── .env.example             ← template for HF_TOKEN and optional DEVICE override
 ├── .gitignore               ← excludes data/, index_store/, model_cache/, *.faiss, .env
-├── requirements.txt         ← pinned deps (Python 3.11, PyTorch cu121, FAISS-cpu, FastAPI…)
-├── Dockerfile               ← nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 base
-├── docker-compose.yml       ← GPU reservation + 3 volume mounts (model_cache, index_store, data)
+├── requirements.txt         ← pinned deps (Python 3.12, PyTorch cu121, FAISS-cpu, FastAPI…)
+├── Dockerfile               ← nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04 base; deps via uv
+├── docker-compose.yml       ← runtime: nvidia + 3 local volume mounts (model_cache, index_store, data)
 ├── Makefile                 ← targets: download-data, build-index, run, eval, build, stop
 ├── README.md                ← user-facing quickstart + license table + security notice
 ├── HANDOFF.md               ← this document
@@ -59,9 +61,10 @@ histopath-retrieval/
 │       └── virchow.py       ← Virchow and Virchow2 (gated)
 │
 ├── scripts/
-│   ├── download_data.py     ← Zenodo fetch + extract + per-class subsample + manifests
-│   ├── build_index.py       ← batched embedding pass → FAISS + metadata JSONL
-│   └── eval.py              ← Recall@K + majority-vote acc@K with bootstrap CI
+│   ├── download_data.py     ← NCT-CRC: Zenodo fetch + extract + per-class subsample + manifests
+│   ├── download_breakhis.py ← BreakHis: fetch + 200X filter + PATIENT-DISJOINT split + manifests
+│   ├── build_index.py       ← batched embedding pass → FAISS + metadata JSONL (dataset-aware)
+│   └── eval.py              ← Recall@K + majority-vote acc@K with bootstrap CI + patient-disjoint check
 │
 └── app/static/
     ├── index.html           ← single-page drag-drop upload + results grid
@@ -244,17 +247,52 @@ Runs over CRC-VAL-HE-7K queries against the built index. Reports:
 - **Majority-vote accuracy@K**: fraction of queries where the most common label in top-K equals the true class.
 - Both reported overall and per-class, with **mean ± std and 95% bootstrap CI** (1000 bootstrap resamples by default). **No bare point estimates** — this was an explicit design requirement to avoid over-optimistic reporting.
 
-### Known evaluation limitation (patient-level leakage)
+### Patient-level holdout: NCT-CRC vs BreakHis
 
-NCT-CRC-HE-100K does not expose per-patient identifiers in its public Zenodo release.
-The train (100K) vs. val (7K) split is used as the only leakage control. Same-source
-patient exclusion — i.e., removing retrieved patches from the same patient as the query —
-is **not performed**. This means reported metrics may be slightly optimistic if the same
-patient appears in both splits (the dataset paper does not guarantee otherwise).
+There are now two datasets, selected by `dataset:` in `config.yaml`:
 
-The eval script prints this limitation prominently at the end of every run. It is
-documented in README.md and the original design plan. If a patient-ID source becomes
-available, the eval script should be updated to add a `--exclude-same-source` variant.
+**`nct-crc` (default)** — NCT-CRC-HE-100K does not expose per-patient identifiers in its
+public Zenodo release. The train (100K) vs. val (7K) split is the only leakage control;
+same-source patient exclusion is **not possible** because patient IDs are unavailable.
+Metrics are upper bounds. `eval.py` detects the absence of `patient_id` and prints this
+limitation.
+
+**`breakhis` (patient-disjoint)** — BreakHis encodes a patient/slide ID in every filename.
+`scripts/download_breakhis.py` parses it, keeps a single magnification (default 200X), and
+writes a **stratified patient-disjoint split**: patients are split *per class* into gallery
+vs. query so that no patient appears in both. `eval.py` then verifies disjointness at
+runtime (computes `index_patients ∩ query_patients`) and prints `Patient-disjoint: YES/NO`.
+This is the genuine patient-held-out estimate NCT-CRC can't give.
+
+**How it's wired (dataset-agnostic infra):**
+- `Settings.dataset_dir` → `data/` for NCT-CRC (back-compat), `data/breakhis/` otherwise.
+- `Settings.index_tag` → bare encoder name for NCT-CRC, `breakhis__<encoder>` otherwise, so
+  the two FAISS indices coexist in `index_store/`.
+- Manifests gained an optional `patient_id` field; `build_index.py` passes it straight into
+  the FAISS metadata JSONL, and `eval.py`'s `report_leakage_status()` reads it back.
+- `app/main.py` loads `settings.index_tag` and reports `dataset` in `/health`.
+
+Switching `dataset` requires a `make build-index` (different index file). A subtype with
+only one patient (rare at 200X) lands entirely in the gallery and is skipped in queries;
+the download script warns when this happens.
+
+### Class imbalance: voting strategies + macro metrics
+
+BreakHis's gallery is ~45% ductal carcinoma, which lets plain majority vote win minority
+neighborhoods and tanks their accuracy (the Recall≫Accuracy gap seen in the first run).
+Two additions address this, both **query-time only — no index rebuild**:
+
+- **`voting` config key** (`uniform` | `distance` | `inverse_freq` | `distance_invfreq`),
+  implemented in `app/retrieval.py::vote()`. `inverse_freq` weights each neighbor by
+  `gallery_class_count(label)^(-vote_beta)` (see `gallery_class_weights(metadata, beta)`);
+  `distance_invfreq` also multiplies by cosine score. The **`vote_beta`** config key tempers
+  the correction (0=off, 1=full 1/count, ~0.5=soft inverse-sqrt-freq); full 1/count
+  over-corrects on BreakHis (one rare neighbor outvotes several correct ones), so β≈0.5 is the
+  practical optimum. Used by both `eval.py` and the live app (`/search`), so the web badge and
+  the metrics agree. `uniform` is the default → NCT-CRC behavior unchanged.
+- **Macro-averaged metrics** in `eval.py::macro_bootstrap_ci()`: the run now prints micro
+  (per-query) *and* macro (per-class-averaged) Recall/Accuracy with bootstrap CIs. Macro is
+  the honest headline for the imbalanced 8-class task.
 
 ---
 
@@ -262,24 +300,38 @@ available, the eval script should be updated to add a `--exclude-same-source` va
 
 ### `Dockerfile`
 
-- Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`
-- Python 3.11 installed via apt; pip from PyPI
-- PyTorch cu121 wheels from `https://download.pytorch.org/whl/cu121`
+- Base: `nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04` (matches the host: Ubuntu 24.04,
+  driver 580 / CUDA 13 capable, TITAN RTX 24 GB)
+- Python 3.12 installed via apt (Ubuntu 24.04 default)
+- **Dependencies installed with `uv`, not pip** — the `uv` static binary is copied from
+  `ghcr.io/astral-sh/uv:latest`. Relevant env vars: `UV_SYSTEM_PYTHON=1` (install into the
+  system interpreter), `UV_BREAK_SYSTEM_PACKAGES=1` (bypass PEP 668 on Ubuntu 24.04),
+  `UV_INDEX_STRATEGY=unsafe-best-match` (lets uv pull `torch` from the PyTorch index and
+  everything else from PyPI, like pip does), `UV_NO_CACHE=1`.
+- The base image ships an NVIDIA apt source that 403s without a proxy; the Dockerfile
+  removes `/etc/apt/sources.list.d/cuda*.list` and `nvidia*.list` before `apt-get update`.
+  CUDA/cuDNN runtime libs are already baked into the image layers, so this is harmless.
+- PyTorch cu121 wheels from `https://download.pytorch.org/whl/cu121` (forward-compatible
+  with the host's newer CUDA driver)
 - No data, no weights, no index baked into the image — all in volumes
-- Works CPU-only: remove or comment out the `deploy.resources` block in `docker-compose.yml`
+- Works CPU-only: remove or comment out the `runtime: nvidia` line in `docker-compose.yml`
 
 ### `docker-compose.yml`
 
-Three volume mounts (all on `/mnt/vdb/histopath/` on the build server):
+Three local volume mounts (inside the repo folder, all gitignored):
 
 | Host | Container | Contents |
 |---|---|---|
-| `/mnt/vdb/histopath/model_cache` | `/model_cache` | HF/timm weights |
-| `/mnt/vdb/histopath/index_store` | `/index_store` | FAISS index + metadata JSONL |
-| `/mnt/vdb/histopath/data` | `/data` | Dataset images + manifests |
+| `./model_cache` | `/model_cache` | HF/timm weights |
+| `./index_store` | `/index_store` | FAISS index + metadata JSONL |
+| `./data` | `/data` | Dataset images + manifests |
 
-GPU reservation uses `deploy.resources.reservations.devices` (Compose v3.9 syntax).
-**Requires `nvidia-container-toolkit`** on the host.
+GPU access uses `runtime: nvidia` plus `NVIDIA_VISIBLE_DEVICES=all` /
+`NVIDIA_DRIVER_CAPABILITIES=compute,utility` env vars. (The old
+`deploy.resources.reservations.devices` block was replaced because this host's
+nvidia-container-toolkit is configured in CDI mode and rejected that path — it explicitly
+asks for `--runtime=nvidia`.) **Requires `nvidia-container-toolkit`** on the host.
+The obsolete top-level `version:` key was removed (Compose v2+ ignores it and warns).
 
 `config.yaml` is also bind-mounted read-only so encoder/K changes don't require a rebuild.
 
@@ -310,7 +362,7 @@ make stop           # docker compose down
 | Raw download (can delete after build) | ~15 GB |
 | **Peak VRAM during index build** (batch=64, fp16 autocast) | **< 3 GB** |
 | **Peak VRAM during query inference** | **< 2 GB** |
-| Target GPU | NVIDIA V100 16 GB |
+| Build/eval GPU (current host) | NVIDIA TITAN RTX 24 GB |
 
 ---
 
@@ -318,12 +370,8 @@ make stop           # docker compose down
 
 ### Bugs / rough edges
 
-1. **`config.py` line 63 — DEVICE env var bug**: The check is `if "device" in os.environ`
-   but the read is `os.environ["DEVICE"]` (note case mismatch). Should be:
-   ```python
-   if "DEVICE" in os.environ:
-       raw["device"] = os.environ["DEVICE"]
-   ```
+1. **`config.py` — DEVICE env var bug**: ✅ FIXED. The guard now checks `"DEVICE"` (was
+   `"device"`) to match the `os.environ["DEVICE"]` read, so the `DEVICE` override works.
 
 2. **`registry.py` lines 51–54 — duplicate branch**: Both `if needs_token` and `else`
    execute identical code (the `hf_token` kwarg is always passed). The conditional is
@@ -364,7 +412,7 @@ make stop           # docker compose down
 ### First-time setup on the existing server
 
 ```bash
-cd /root/histopath-retrieval
+cd /home/user01/histopath-retrieval
 cp .env.example .env           # fill in HF_TOKEN if using a gated encoder
 make build                     # 5–10 min
 make download-data             # downloads ~15 GB from Zenodo, then subsamples
@@ -400,7 +448,8 @@ make run                       # visit http://localhost:8000
 | Index namespaced by encoder name | Prevents silent garbage results if encoder is switched without rebuild |
 | Subsample default 1000/class (9K total) | ~37 MB index, ~200 MB thumbnails, ~3 min GPU embed time — comfortable on 22 GB free disk |
 | Bootstrap CI in eval, not bare point estimates | Explicit requirement from the domain; the histopath literature has a known problem with over-optimistic single-number evals |
-| Patient-leakage documented as limitation, not worked around | NCT-CRC Zenodo release has no patient IDs; fabricating exclusions would be worse than acknowledging the gap |
+| Patient-leakage documented as limitation for NCT-CRC | NCT-CRC Zenodo release has no patient IDs; fabricating exclusions would be worse than acknowledging the gap |
+| BreakHis added for genuine patient-disjoint eval | BreakHis encodes a patient/slide ID per filename, enabling a real patient-held-out split. Default 200X + 8 subtypes; both datasets coexist (namespaced data dir + index tag) so leaky-vs-disjoint can be compared |
 | faiss-cpu not faiss-gpu | At 9K–100K vectors exact CPU search is sub-millisecond; faiss-gpu adds CUDA dependency friction and is unnecessary at this scale |
 | No JS framework (vanilla) | MVP; no build step; easier for others to read and extend |
 | Workers=1 in uvicorn CMD | The encoder and FAISS index are global state loaded once at startup; multiple workers would each load their own copy (doubling VRAM), which is not worth it for a single-user demo |

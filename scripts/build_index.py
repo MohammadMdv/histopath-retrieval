@@ -30,6 +30,7 @@ def main():
     settings = load_settings(Path(args.config))
     device = settings.resolved_device
     print(f"Device  : {device}")
+    print(f"Dataset : {settings.dataset}")
     print(f"Encoder : {settings.encoder}")
 
     encoder = load_encoder(
@@ -37,9 +38,10 @@ def main():
     )
     print(f"Embed dim: {encoder.embed_dim}")
 
-    manifest_path = settings.data_dir / "index_manifest.jsonl"
+    manifest_path = settings.dataset_dir / "index_manifest.jsonl"
     if not manifest_path.exists():
-        sys.exit(f"Manifest not found: {manifest_path}\nRun 'make download-data' first.")
+        sys.exit(f"Manifest not found: {manifest_path}\n"
+                 f"Run the download step for dataset '{settings.dataset}' first.")
 
     with open(manifest_path) as f:
         records = [json.loads(l) for l in f]
@@ -77,10 +79,10 @@ def main():
     build_index(
         embeddings_np,
         valid_records,
-        encoder.name,
+        settings.index_tag,
         settings.index_dir,
     )
-    print(f"Index saved to {settings.index_dir}")
+    print(f"Index '{settings.index_tag}' saved to {settings.index_dir}")
 
 
 if __name__ == "__main__":

@@ -19,19 +19,44 @@ class EvalConfig(BaseModel):
     query_sample: Optional[int] = None
 
 
+class BreakHisConfig(BaseModel):
+    magnification: int = 200          # 40 | 100 | 200 | 400
+    index_patient_frac: float = 0.6   # fraction of patients per class used as the gallery
+    granularity: str = "subtype"      # subtype (8-class) | binary
+
+
 class Settings(BaseModel):
+    dataset: str = "nct-crc"          # nct-crc | breakhis
     encoder: str = "phikon-v2"
     top_k: int = 5
+    voting: str = "uniform"           # uniform | distance | inverse_freq | distance_invfreq
+    vote_beta: float = 1.0            # tempering for inverse_freq: 0=none, 1=full 1/count, ~0.5=soft
     subsample_per_class: int = 1000
     batch_size: int = 64
     device: str = "auto"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
+    breakhis: BreakHisConfig = Field(default_factory=BreakHisConfig)
     hf_token: Optional[str] = Field(default=None)
 
     @property
     def data_dir(self) -> Path:
         return Path(self.paths.data_dir)
+
+    @property
+    def dataset_dir(self) -> Path:
+        # NCT-CRC keeps the flat /data layout (back-compat); other datasets get a subdir.
+        if self.dataset == "nct-crc":
+            return self.data_dir
+        return self.data_dir / self.dataset
+
+    @property
+    def index_tag(self) -> str:
+        # Namespace the index by dataset so multiple datasets can coexist.
+        # NCT-CRC keeps the bare encoder name for back-compat with existing index files.
+        if self.dataset == "nct-crc":
+            return self.encoder
+        return f"{self.dataset}__{self.encoder}"
 
     @property
     def index_dir(self) -> Path:
@@ -59,7 +84,7 @@ def load_settings(config_path: Path = _CONFIG_PATH) -> Settings:
             raw = yaml.safe_load(f) or {}
 
     hf_token = os.environ.get("HF_TOKEN") or raw.pop("hf_token", None) or None
-    if "device" in os.environ:
+    if "DEVICE" in os.environ:
         raw["device"] = os.environ["DEVICE"]
 
     return Settings(**raw, hf_token=hf_token)
