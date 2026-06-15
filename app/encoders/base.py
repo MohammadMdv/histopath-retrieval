@@ -7,6 +7,15 @@ class Encoder(ABC):
     name: str
     embed_dim: int
     gated: bool = False
+    # Optional callable(PIL.Image) -> PIL.Image set by load_encoder (e.g. stain
+    # normalization). Applied inside encode() so gallery and queries always go
+    # through the identical preprocessing.
+    stain_normalizer = None
+
+    def _apply_stain(self, images: list[Image.Image]) -> list[Image.Image]:
+        if self.stain_normalizer is None:
+            return images
+        return [self.stain_normalizer(img) for img in images]
 
     @abstractmethod
     def encode(self, images: list[Image.Image]) -> np.ndarray:

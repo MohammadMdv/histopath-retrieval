@@ -35,7 +35,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting up — device={device}, encoder={settings.encoder}")
 
     _encoder = load_encoder(
-        settings.encoder, device, str(settings.model_cache), settings.hf_token
+        settings.encoder, device, str(settings.model_cache), settings.hf_token,
+        stain_norm=settings.stain_norm,
     )
 
     if index_exists(settings.index_tag, settings.index_dir):
@@ -76,6 +77,7 @@ async def health():
         "device": settings.resolved_device,
         "top_k": settings.top_k,
         "voting": settings.voting,
+        "stain_norm": settings.stain_norm,
     }
 
 

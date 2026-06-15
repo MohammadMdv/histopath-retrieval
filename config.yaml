@@ -2,12 +2,13 @@
 # All paths are inside the container; mount them as Docker volumes.
 
 dataset: breakhis            # nct-crc | breakhis  (selects download/index/eval + query gallery)
-encoder: phikon-v2          # options: phikon-v2, hibou-b, uni, uni2-h, virchow, virchow2
+encoder: virchow2              # options: phikon-v2, hibou-b, uni, uni2-h, virchow, virchow2
 top_k: 5
 voting: inverse_freq             # uniform | distance | inverse_freq | distance_invfreq
                             #   inverse_freq / distance_invfreq counter gallery class imbalance
                             #   (e.g. BreakHis, where ductal carcinoma dominates the index)
 vote_beta: 0.5              # tempering for inverse_freq: 0=off, 1=full 1/count, ~0.5=soft (sweep this)
+stain_norm: none            # none | macenko  (didn't help on BreakHis; kept off)
 subsample_per_class: 1000   # NCT-CRC only: patches per class for the index (9 classes → 9000 total)
 batch_size: 64              # embedding batch size during index build
 device: auto                # auto | cuda | cpu
@@ -23,7 +24,22 @@ breakhis:
   index_patient_frac: 0.6   # fraction of patients per class placed in the gallery (rest = queries)
   granularity: subtype      # subtype (8-class) | binary (benign/malignant)
 
+# Gallery-side minority-class augmentation (index build only; queries untouched).
+# Expands under-represented classes with label-preserving geometric variants
+# (rotations/flips/mild crops) of their existing gallery patches. Augmented
+# vectors keep the original image path, so thumbnails stay real. Adds variation,
+# not new patients/morphology — expect a modest minority-recall effect.
+# Index is namespaced __aug-<target_per_class>, so it won't clobber the baseline.
+augment:
+  enabled: true            # flip to true for the A/B, then rebuild the index
+  target_per_class: 200     # expand each small class up to ~this many gallery exemplars
+  max_factor: 8             # cap variants per source patch (incl. original)
+  seed: 42
+
 # Evaluation settings
 eval:
   n_bootstrap: 1000
   query_sample: null          # null = use all queries; set an int to subsample
+
+
+

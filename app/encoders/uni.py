@@ -34,14 +34,19 @@ class UNIEncoder(Encoder):
         )
         self.model.eval().to(device)
         self.device = device
+        # Resize(224) alone only scales the SHORTER side -> non-square input.
+        # CenterCrop(224) forces a square 224x224, matching UNI's canonical
+        # preprocessing and keeping the ViT position-embedding grid square.
         self.transform = transforms.Compose([
             transforms.Resize(224),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ])
 
     @torch.inference_mode()
     def encode(self, images: list[Image.Image]) -> np.ndarray:
+        images = self._apply_stain(images)
         batch = torch.stack([self.transform(img.convert("RGB")) for img in images]).to(self.device)
         with torch.autocast(device_type=self.device.split(":")[0], enabled=self.device != "cpu"):
             embeddings = self.model(batch)
@@ -56,18 +61,42 @@ class UNI2Encoder(UNIEncoder):
 
     def __init__(self, device: str, model_cache: str, hf_token: str):
         import timm
+        from timm.layers import SwiGLUPacked
         from torchvision import transforms
         from huggingface_hub import snapshot_download
 
-        local_dir = snapshot_download("MahmoodLab/UNI2-h", cache_dir=model_cache, token=hf_token)
+        snapshot_download("MahmoodLab/UNI2-h", cache_dir=model_cache, token=hf_token)
+        # UNI2-h is a non-standard ViT (ViT-g/14, SwiGLU MLP, 8 register tokens,
+        # no_embed_class). timm does NOT infer all of this from the hub config in
+        # every version, so the architecture kwargs MUST be passed explicitly —
+        # otherwise create_model builds the wrong shape and fails to load the
+        # pretrained position embeddings. These are MahmoodLab's official kwargs.
+        timm_kwargs = {
+            "img_size": 224,
+            "patch_size": 14,
+            "depth": 24,
+            "num_heads": 24,
+            "init_values": 1e-5,
+            "embed_dim": 1536,
+            "mlp_ratio": 2.66667 * 2,
+            "num_classes": 0,
+            "no_embed_class": True,
+            "mlp_layer": SwiGLUPacked,
+            "act_layer": torch.nn.SiLU,
+            "reg_tokens": 8,
+            "dynamic_img_size": True,
+        }
         self.model = timm.create_model(
-            "hf-hub:MahmoodLab/UNI2-h", pretrained=True,
-            init_values=1e-5, dynamic_img_size=True
+            "hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs
         )
         self.model.eval().to(device)
         self.device = device
+        # UNI2-h is a ViT-g/14 with register tokens; a non-square input breaks
+        # its position-embedding reshape. CenterCrop(224) guarantees a square
+        # 224x224 (16x16 patch grid).
         self.transform = transforms.Compose([
             transforms.Resize(224),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ])

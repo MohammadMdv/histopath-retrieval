@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.config import load_settings
 from app.encoders import load_encoder
 from app.index import build_index
+from app.augment import build_augmentation_plan, apply_augmentation
 
 
 def main():
@@ -32,10 +33,24 @@ def main():
     print(f"Device  : {device}")
     print(f"Dataset : {settings.dataset}")
     print(f"Encoder : {settings.encoder}")
+    print(f"Stain   : {settings.stain_norm}")
 
     encoder = load_encoder(
-        settings.encoder, device, str(settings.model_cache), settings.hf_token
+        settings.encoder, device, str(settings.model_cache), settings.hf_token,
+        stain_norm=settings.stain_norm,
     )
+    # Guard against the registry's silent fallback. Building an index is a
+    # benchmarking action: if the requested encoder failed to load and we
+    # fell back to a different one, the index would be saved under the
+    # requested name but hold the wrong model's vectors. Abort loudly instead.
+    if encoder.name != settings.encoder:
+        sys.exit(
+            f"ERROR: requested encoder '{settings.encoder}' but loaded "
+            f"'{encoder.name}' (fallback). Refusing to build a mislabeled index "
+            f"'{settings.index_tag}'.\n"
+            f"Fix the cause (gated model needs HF_TOKEN, or a load error above) "
+            f"or set encoder: {encoder.name} in config.yaml to build it on purpose."
+        )
     print(f"Embed dim: {encoder.embed_dim}")
 
     manifest_path = settings.dataset_dir / "index_manifest.jsonl"
@@ -45,6 +60,21 @@ def main():
 
     with open(manifest_path) as f:
         records = [json.loads(l) for l in f]
+
+    if settings.augment.enabled:
+        records, aug_summary = build_augmentation_plan(
+            records,
+            settings.augment.target_per_class,
+            settings.augment.max_factor,
+            settings.augment.seed,
+        )
+        print(f"Augment : ON (target_per_class={settings.augment.target_per_class}, "
+              f"max_factor={settings.augment.max_factor})")
+        for label, (orig, added) in sorted(aug_summary.items()):
+            if added:
+                print(f"  {label:<6} {orig:4d} -> {orig + added:4d}  (+{added} augmented)")
+    else:
+        print("Augment : off")
 
     print(f"Images to embed: {len(records)}")
 
@@ -59,6 +89,8 @@ def main():
         for r in batch_records:
             try:
                 img = Image.open(r["path"]).convert("RGB")
+                if "augment" in r:
+                    img = apply_augmentation(img, r["augment"])
                 images.append(img)
                 batch_valid.append(r)
             except Exception as e:

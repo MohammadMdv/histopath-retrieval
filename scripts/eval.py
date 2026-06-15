@@ -78,7 +78,8 @@ def main():
     device = settings.resolved_device
 
     encoder = load_encoder(
-        settings.encoder, device, str(settings.model_cache), settings.hf_token
+        settings.encoder, device, str(settings.model_cache), settings.hf_token,
+        stain_norm=settings.stain_norm,
     )
 
     if not index_exists(settings.index_tag, settings.index_dir):
@@ -103,6 +104,7 @@ def main():
     class_weights = gallery_class_weights(metadata, settings.vote_beta)
 
     print(f"Dataset : {settings.dataset}")
+    print(f"Stain   : {settings.stain_norm}")
     print(f"Voting  : {settings.voting}"
           + (f" (beta={settings.vote_beta})" if settings.voting in ("inverse_freq", "distance_invfreq") else ""))
     print(f"Evaluating {len(queries)} queries, top-K={k}, encoder={encoder.name}")

@@ -28,6 +28,7 @@ def load_encoder(
     device: str,
     model_cache: str,
     hf_token: Optional[str] = None,
+    stain_norm: str = "none",
 ) -> Encoder:
     if name not in _REGISTRY:
         raise ValueError(f"Unknown encoder '{name}'. Available: {list(_REGISTRY)}")
@@ -58,8 +59,14 @@ def load_encoder(
                 f"Failed to load encoder '{name}': {exc}. "
                 f"Falling back to '{_DEFAULT}'."
             )
-            return load_encoder(_DEFAULT, device, model_cache, hf_token)
+            return load_encoder(_DEFAULT, device, model_cache, hf_token, stain_norm)
         raise
 
-    logger.info(f"Loaded encoder '{encoder.name}' (dim={encoder.embed_dim}, device={device})")
+    from app.preprocess import make_stain_normalizer
+    encoder.stain_normalizer = make_stain_normalizer(stain_norm)
+
+    logger.info(
+        f"Loaded encoder '{encoder.name}' (dim={encoder.embed_dim}, device={device}, "
+        f"stain_norm={stain_norm})"
+    )
     return encoder

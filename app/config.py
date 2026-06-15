@@ -25,18 +25,27 @@ class BreakHisConfig(BaseModel):
     granularity: str = "subtype"      # subtype (8-class) | binary
 
 
+class AugmentConfig(BaseModel):
+    enabled: bool = False             # gallery-side minority-class expansion (index build only)
+    target_per_class: int = 200       # expand under-represented classes up to ~this many exemplars
+    max_factor: int = 8               # cap variants per source patch (<= this many incl. original)
+    seed: int = 42
+
+
 class Settings(BaseModel):
     dataset: str = "nct-crc"          # nct-crc | breakhis
     encoder: str = "phikon-v2"
     top_k: int = 5
     voting: str = "uniform"           # uniform | distance | inverse_freq | distance_invfreq
     vote_beta: float = 1.0            # tempering for inverse_freq: 0=none, 1=full 1/count, ~0.5=soft
+    stain_norm: str = "none"          # none | macenko  (applied symmetrically to gallery + queries)
     subsample_per_class: int = 1000
     batch_size: int = 64
     device: str = "auto"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
     breakhis: BreakHisConfig = Field(default_factory=BreakHisConfig)
+    augment: AugmentConfig = Field(default_factory=AugmentConfig)
     hf_token: Optional[str] = Field(default=None)
 
     @property
@@ -55,8 +64,19 @@ class Settings(BaseModel):
         # Namespace the index by dataset so multiple datasets can coexist.
         # NCT-CRC keeps the bare encoder name for back-compat with existing index files.
         if self.dataset == "nct-crc":
-            return self.encoder
-        return f"{self.dataset}__{self.encoder}"
+            base = self.encoder
+        else:
+            base = f"{self.dataset}__{self.encoder}"
+        # A different stain normalization produces different embeddings, so it
+        # must get its own index file (and keeps the A/B from clobbering the
+        # un-normalized index). stain_norm=none preserves existing tags.
+        if self.stain_norm and self.stain_norm != "none":
+            base = f"{base}__stain-{self.stain_norm}"
+        # Augmentation changes the gallery contents, so it also gets its own
+        # index file rather than overwriting the un-augmented one.
+        if self.augment.enabled:
+            base = f"{base}__aug-{self.augment.target_per_class}"
+        return base
 
     @property
     def index_dir(self) -> Path:

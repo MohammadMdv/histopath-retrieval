@@ -27,6 +27,7 @@ class HibouEncoder(Encoder):
 
     @torch.inference_mode()
     def encode(self, images: list[Image.Image]) -> np.ndarray:
+        images = self._apply_stain(images)
         inputs = self.processor(images=images, return_tensors="pt").to(self.device)
         with torch.autocast(device_type=self.device.split(":")[0], enabled=self.device != "cpu"):
             outputs = self.model(**inputs)
